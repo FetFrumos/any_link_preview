@@ -1,117 +1,117 @@
 import 'package:html/dom.dart';
 
 import 'base.dart';
-import 'util.dart';
 
 /// Parses [Metadata] from `<meta>`, `<title>`, and `<img>` tags.
+///
+/// This parser acts as a fallback when richer metadata sources
+/// (like Open Graph / Twitter Card / JSON-LD) are not available.
 class HtmlMetaParser with BaseMetaInfo {
-  /// The [Document] to parse.
   final Document? _document;
 
   HtmlMetaParser(this._document);
 
-  /// Max number of <img> candidates to evaluate.
-  static const int _maxCandidates = 3;
+  /// How many valid image candidates to inspect.
+  static const int _maxCandidates = 4;
 
-  /// Minimum pixel area (width * height) to consider an image as content.
-  /// Filters out tracking pixels, spacers, 1x1 gifs, tiny icons.
+  /// Skip images smaller than 32x32 px.
   static const int _minArea = 32 * 32;
 
-  /// Get the [Metadata.title] from the <title> tag.
   @override
-  String? get title => _document?.head?.querySelector('title')?.text;
+  String? get title => _document?.head?.querySelector('title')?.text.trim();
 
-  /// Get the [Metadata.desc] from the content of the
-  /// <meta name="description"> tag.
   @override
-  String? get desc => _document?.head
-      ?.querySelector("meta[name='description']")
-      ?.attributes
-      .get('content');
+  String? get desc =>
+      _document?.head
+          ?.querySelector("meta[name='description']")
+          ?.attributes['content']
+          ?.trim() ??
+      _document?.head
+          ?.querySelector("meta[property='og:description']")
+          ?.attributes['content']
+          ?.trim();
 
-  /// Get the [Metadata.image] from the <img> tags in the body.
-  ///
-  /// FORKED: Instead of returning the first <img> src, collects up to
-  /// [_maxCandidates] images, filters out likely non-content images,
-  /// and picks the one with the largest dimensions (from HTML attributes)
-  /// or file size (via HEAD request).
   @override
-  String? get image => _findBestImageSync();
+  String? get image => _findBestImage();
 
-  /// Get the [Metadata.siteName] from the content of the
-  /// <meta name="site_name"> meta tag.
   @override
-  String? get siteName => _document?.head
-      ?.querySelector("meta[name='site_name']")
-      ?.attributes
-      .get('content');
+  String? get siteName =>
+      _document?.head
+          ?.querySelector("meta[property='og:site_name']")
+          ?.attributes['content']
+          ?.trim() ??
+      _document?.head
+          ?.querySelector("meta[name='site_name']")
+          ?.attributes['content']
+          ?.trim();
 
   @override
   String toString() => parse().toString();
 
-  // ---------------------------------------------------------------------------
-  // Forked image selection logic
-  // ---------------------------------------------------------------------------
-
-  /// Synchronously selects the best image from HTML attributes only.
-  /// This avoids making the getter async (which would break the BaseMetaInfo
-  /// contract). Uses width/height attributes and filtering heuristics.
-  String? _findBestImageSync() {
+  /// Checks the first few valid `<img>` candidates and returns the largest one.
+  ///
+  /// If dimensions are not available, the first non-junk image is used as a
+  /// fallback.
+  String? _findBestImage() {
     final imgs = _document?.body?.querySelectorAll('img');
     if (imgs == null || imgs.isEmpty) return null;
 
     String? bestSrc;
-    var bestArea = -1;
-    var candidateCount = 0;
+    int bestArea = -1;
+    int candidateCount = 0;
 
     for (final img in imgs) {
       if (candidateCount >= _maxCandidates) break;
 
-      final src = img.attributes['src'];
+      final src = _extractImageSrc(img);
       if (src == null || src.isEmpty) continue;
 
-      // Skip obvious non-content images
-      if (_isNonContentImage(src, img)) continue;
+      if (_isJunkImage(src, img)) continue;
 
       candidateCount++;
 
       final area = _getArea(img);
 
       if (area != null) {
-        // Has explicit dimensions — compare by area
         if (area > bestArea) {
           bestArea = area;
           bestSrc = src;
         }
-      } else {
+      } else
         bestSrc ??= src;
-      }
     }
 
     return bestSrc;
   }
 
-  /// Returns pixel area (width × height) from HTML attributes, or null.
+  /// Tries to extract image URL from common attributes used in regular and
+  /// lazy-loaded images.
+  static String? _extractImageSrc(Element img) {
+    return img.attributes['src'] ??
+        img.attributes['data-src'] ??
+        img.attributes['data-lazy-src'];
+  }
+
+  /// Returns width * height from HTML attributes, or null if unavailable.
   static int? _getArea(Element img) {
     final w = int.tryParse(img.attributes['width'] ?? '');
     final h = int.tryParse(img.attributes['height'] ?? '');
-    if (w != null && h != null && w > 0 && h > 0) return w * h;
+
+    if (w != null && h != null && w > 0 && h > 0) {
+      return w * h;
+    }
+
     return null;
   }
 
-  /// Heuristic filter: returns true for images that are likely not
-  /// meaningful page content (tracking pixels, icons, spacers, logos, etc.)
-  static bool _isNonContentImage(String src, Element img) {
-    final srcLower = src.toLowerCase();
+  /// Returns true if this image is likely junk / decorative / tracking-related.
+  static bool _isJunkImage(String src, Element img) {
+    final s = src.toLowerCase();
 
-    // Data URIs (usually tiny inline images)
-    if (srcLower.startsWith('data:')) return true;
+    if (s.startsWith('data:')) return true;
+    if (s.endsWith('.svg')) return true;
 
-    // SVG files (usually icons/logos, not photos)
-    if (srcLower.endsWith('.svg')) return true;
-
-    // Common non-content path segments
-    const skipPatterns = [
+    const junkPatterns = [
       'favicon',
       'icon',
       'pixel',
@@ -126,15 +126,15 @@ class HtmlMetaParser with BaseMetaInfo {
       'transparent.gif',
       'shim.gif',
     ];
-    for (final pattern in skipPatterns) {
-      if (srcLower.contains(pattern)) return true;
+
+    for (final pattern in junkPatterns) {
+      if (s.contains(pattern)) return true;
     }
 
-    // Explicitly tiny images (from HTML attributes)
     final w = int.tryParse(img.attributes['width'] ?? '');
     final h = int.tryParse(img.attributes['height'] ?? '');
+
     if (w != null && h != null && w * h < _minArea) return true;
-    // Also catch single-dimension tiny hints like width="1" or height="1"
     if (w != null && w <= 2) return true;
     if (h != null && h <= 2) return true;
 
