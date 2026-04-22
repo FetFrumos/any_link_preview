@@ -290,7 +290,8 @@ class AnyLinkPreviewState extends State<AnyLinkPreview> {
     final providedLink = widget.link;
 
     _errorImage = widget.errorImage ??
-        'https://github.com/sur950/any_link_preview/blob/master/lib/assets/giphy.gif?raw=true';
+        'https://github.com/FetFrumos/any_link_preview/blob/feature/replace-placeholder-image/lib/assets/placeholder.png?raw=true';
+
     _errorTitle = widget.errorTitle ?? 'Something went wrong!';
     _errorBody = widget.errorBody ??
         'Oops! Unable to parse the url. We have sent feedback to our developers'
